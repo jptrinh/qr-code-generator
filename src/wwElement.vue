@@ -102,7 +102,7 @@ export default {
                         // Serialize the SVG to a data URL
                         const svgString = new XMLSerializer().serializeToString(svgElement);
                         const dataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgString);
-                        setQrDataUrl(dataUrl);
+                        //setQrDataUrl(dataUrl);
                     }
                 }, 100);
 
