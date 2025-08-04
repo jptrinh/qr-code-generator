@@ -72,7 +72,7 @@ if (!qrContainer.value) return;
 try {
 error.value = null;
 
-//await loadQRCodeScript();
+await loadQRCodeScript();
 
 if (qrCode) {
 qrContainer.value.innerHTML = '';
