@@ -9,7 +9,7 @@
 
 <script>
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
-import qrcode from 'davidshimjs-qrcodejs';
+
 export default {
     props: {
         content: { type: Object, required: true },
@@ -22,6 +22,7 @@ export default {
     setup(props, { emit }) {
         const qrContainer = ref(null);
         const error = ref(null);
+        const scriptLoaded = ref(false);
         let qrCode = null;
 
         // Internal state for the generated QR code
@@ -48,50 +49,72 @@ export default {
             justifyContent: 'center'
         }));
 
-        const postProcessSVG = (svgElement) => {
-            if (!svgElement) return;
+        // Load QR code script dynamically
+        const loadQRCodeScript = () => {
+            return new Promise((resolve, reject) => {
+                if (window.QRCode) {
+                    scriptLoaded.value = true;
+                    return resolve();
+                }
 
-            const whitePixels = Array.from(svgElement.querySelectorAll('use[xlink\\:href="#template"]'));
-            const overlapAmount = 0.04;
-            const expandedSize = 1 + 2 * overlapAmount; // Original size + overlap on both sides
-
-            whitePixels.forEach(pixel => {
-                const x = parseFloat(pixel.getAttribute('x')) || 0;
-                const y = parseFloat(pixel.getAttribute('y')) || 0;
-
-                pixel.setAttribute('x', (x - overlapAmount).toFixed(2));
-                pixel.setAttribute('y', (y - overlapAmount).toFixed(2));
-                pixel.setAttribute('width', expandedSize.toFixed(2));
-                pixel.setAttribute('height', expandedSize.toFixed(2));
+                const script = document.createElement('script');
+                script.src = 'https://cdn.jsdelivr.net/npm/davidshimjs-qrcodejs@0.0.2/qrcode.min.js';
+                script.async = true;
+                script.onload = () => {
+                    scriptLoaded.value = true;
+                    resolve();
+                };
+                script.onerror = (err) => {
+                    reject(new Error('Failed to load QR code script'));
+                };
+                document.head.appendChild(script);
             });
         };
 
-        const generateQR = async () => {
-            if (!qrContainer.value) return;
+        const postProcessSVG = (svgElement) => {
+            if (!svgElement) return;
+
+            try {
+                const whitePixels = Array.from(svgElement.querySelectorAll('use[xlink\\:href="#template"]'));
+                const overlapAmount = 0.04;
+                const expandedSize = 1 + 2 * overlapAmount; // Original size + overlap on both sides
+
+                whitePixels.forEach(pixel => {
+                    const x = parseFloat(pixel.getAttribute('x')) || 0;
+                    const y = parseFloat(pixel.getAttribute('y')) || 0;
+
+                    pixel.setAttribute('x', (x - overlapAmount).toFixed(2));
+                    pixel.setAttribute('y', (y - overlapAmount).toFixed(2));
+                    pixel.setAttribute('width', expandedSize.toFixed(2));
+                    pixel.setAttribute('height', expandedSize.toFixed(2));
+                });
+            } catch (err) {
+                console.error('Error post-processing SVG:', err);
+            }
+        };
+
+        const generateQRToCanvas = () => {
+            if (!qrContainer.value || !window.QRCode) return;
 
             try {
                 error.value = null;
-
-                //await loadQRCodeScript();
-
-                if (qrCode) {
-                    qrContainer.value.innerHTML = '';
-                }
+                qrContainer.value.innerHTML = '';
 
                 const size = parseInt(props.content?.size) || 200;
 
-                qrCode = new qrcode(qrContainer.value, {
+                qrCode = new window.QRCode(qrContainer.value, {
                     text: props.content?.text || 'https://www.weweb.io',
                     width: size,
                     height: size,
                     colorDark: props.content?.foregroundColor || '#000000',
                     colorLight: props.content?.backgroundColor || '#FFFFFF',
-                    correctLevel: qrcode.CorrectLevel[props.content?.errorCorrection || 'M'],
+                    correctLevel: window.QRCode.CorrectLevel[props.content?.errorCorrection || 'M'],
                     useSVG: true
                 });
 
+                // Wait for rendering to complete
                 setTimeout(() => {
-                    const svgElement = qrContainer.value.querySelector('svg');
+                    const svgElement = qrContainer.value?.querySelector('svg');
                     if (svgElement) {
                         svgElement.style.width = '100%';
                         svgElement.style.height = 'auto';
@@ -102,25 +125,55 @@ export default {
                         // Serialize the SVG to a data URL
                         const svgString = new XMLSerializer().serializeToString(svgElement);
                         const dataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgString);
-                        //setQrDataUrl(dataUrl);
+                        setQrDataUrl(dataUrl);
+                    } else {
+                        // Fallback to canvas if SVG is not available
+                        const canvas = qrContainer.value?.querySelector('canvas');
+                        if (canvas) {
+                            const dataUrl = canvas.toDataURL('image/png');
+                            setQrDataUrl(dataUrl);
+                        }
                     }
                 }, 100);
-
             } catch (err) {
                 console.error('Error generating QR code:', err);
                 error.value = 'Failed to generate QR code';
             }
         };
 
-        const downloadQR = () => {
-            if (!qrDataUrl.value) return;
+        const generateQR = async () => {
+            try {
+                if (!scriptLoaded.value) {
+                    await loadQRCodeScript();
+                }
+                generateQRToCanvas();
+            } catch (err) {
+                console.error('Error in QR generation process:', err);
+                error.value = 'Failed to generate QR code: ' + (err.message || 'Unknown error');
+            }
+        };
 
-            const link = document.createElement('a');
-            link.download = 'qrcode.svg'; // Suggest .svg as the default download for SVG
-            link.href = qrDataUrl.value;
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
+        const downloadQR = () => {
+            if (!qrDataUrl.value) {
+                console.error('No QR code data URL available for download');
+                return;
+            }
+
+            try {
+                const link = document.createElement('a');
+                const isDataUrlSVG = qrDataUrl.value.startsWith('data:image/svg+xml');
+
+                link.download = isDataUrlSVG ? 'qrcode.svg' : 'qrcode.png';
+                link.href = qrDataUrl.value;
+                link.style.display = 'none';
+                document.body.appendChild(link);
+                link.click();
+                setTimeout(() => {
+                    document.body.removeChild(link);
+                }, 100);
+            } catch (err) {
+                console.error('Error downloading QR code:', err);
+            }
         };
 
         watch(
@@ -142,9 +195,7 @@ export default {
         });
 
         onBeforeUnmount(() => {
-            if (qrCode) {
-                qrCode = null;
-            }
+            qrCode = null;
         });
 
         return {
@@ -175,9 +226,11 @@ export default {
         padding: 4px;
 
         img,
-        canvas {
+        canvas,
+        svg {
             width: 100% !important;
             height: auto !important;
+            max-width: 100%;
         }
     }
 }

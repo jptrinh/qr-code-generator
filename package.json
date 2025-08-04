@@ -1,1 +1,9 @@
-{"name":"qr-code-generator","version":"1.0.12","scripts":{"build":"weweb build","serve":"weweb serve"},"dependencies":{"davidshimjs-qrcodejs":"0.0.2"},"devDependencies":{}}
+{
+    "name": "qr-code-generator",
+    "version": "1.0.13",
+    "scripts": {
+        "build": "weweb build",
+        "serve": "weweb serve"
+    },
+    "devDependencies": {}
+}
