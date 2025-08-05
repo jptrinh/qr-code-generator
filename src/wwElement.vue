@@ -8,7 +8,7 @@
 </template>
 
 <script>
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
 
 export default {
     props: {
@@ -24,6 +24,7 @@ export default {
         const error = ref(null);
         const scriptLoaded = ref(false);
         let qrCode = null;
+        let resizeObserver = null;
 
         // Internal state for the generated QR code
         const { value: qrDataUrl, setValue: setQrDataUrl } = wwLib.wwVariable.useComponentVariable({
@@ -34,16 +35,17 @@ export default {
 
         const containerStyle = computed(() => ({
             width: '100%',
-            height: 'auto',
+            height: '100%',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            backgroundColor: props.content?.backgroundColor || '#FFFFFF'
+            backgroundColor: props.content?.backgroundColor || '#FFFFFF',
+            minHeight: '200px' // Fallback minimum height
         }));
 
         const qrContainerStyle = computed(() => ({
             width: '100%',
-            height: 'auto',
+            height: '100%',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center'
@@ -77,7 +79,7 @@ export default {
             try {
                 const whitePixels = Array.from(svgElement.querySelectorAll('use[xlink\\:href="#template"]'));
                 const overlapAmount = 0.04;
-                const expandedSize = 1 + 2 * overlapAmount; // Original size + overlap on both sides
+                const expandedSize = 1 + 2 * overlapAmount;
 
                 whitePixels.forEach(pixel => {
                     const x = parseFloat(pixel.getAttribute('x')) || 0;
@@ -93,6 +95,25 @@ export default {
             }
         };
 
+        const getContainerSize = () => {
+            if (!qrContainer.value) return 200;
+            
+            const containerRect = qrContainer.value.getBoundingClientRect();
+            const parentRect = qrContainer.value.parentElement?.getBoundingClientRect();
+            
+            // Use the smaller dimension to ensure QR code fits properly
+            const availableWidth = containerRect.width || parentRect?.width || 200;
+            const availableHeight = containerRect.height || parentRect?.height || 200;
+            
+            // Use custom size if provided, otherwise use container size
+            const customSize = parseInt(props.content?.size);
+            if (customSize && customSize > 0) {
+                return Math.min(customSize, Math.min(availableWidth, availableHeight));
+            }
+            
+            return Math.min(availableWidth, availableHeight) || 200;
+        };
+
         const generateQRToCanvas = () => {
             if (!qrContainer.value || !window.QRCode) return;
 
@@ -100,7 +121,7 @@ export default {
                 error.value = null;
                 qrContainer.value.innerHTML = '';
 
-                const size = parseInt(props.content?.size) || 200;
+                const size = getContainerSize();
 
                 qrCode = new window.QRCode(qrContainer.value, {
                     text: props.content?.text || 'https://www.weweb.io',
@@ -115,24 +136,35 @@ export default {
                 // Wait for rendering to complete
                 setTimeout(() => {
                     const svgElement = qrContainer.value?.querySelector('svg');
+                    const canvasElement = qrContainer.value?.querySelector('canvas');
+                    
                     if (svgElement) {
+                        // Make SVG responsive and fill container
+                        svgElement.setAttribute('width', '100%');
+                        svgElement.setAttribute('height', '100%');
+                        svgElement.setAttribute('viewBox', `0 0 ${size} ${size}`);
+                        svgElement.setAttribute('preserveAspectRatio', 'xMidYMid meet');
                         svgElement.style.width = '100%';
-                        svgElement.style.height = 'auto';
+                        svgElement.style.height = '100%';
+                        svgElement.style.maxWidth = '100%';
+                        svgElement.style.maxHeight = '100%';
 
-                        // Post-process the SVG to add overlap
                         postProcessSVG(svgElement);
 
                         // Serialize the SVG to a data URL
                         const svgString = new XMLSerializer().serializeToString(svgElement);
                         const dataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgString);
                         setQrDataUrl(dataUrl);
-                    } else {
-                        // Fallback to canvas if SVG is not available
-                        const canvas = qrContainer.value?.querySelector('canvas');
-                        if (canvas) {
-                            const dataUrl = canvas.toDataURL('image/png');
-                            setQrDataUrl(dataUrl);
-                        }
+                    } else if (canvasElement) {
+                        // Make canvas responsive
+                        canvasElement.style.width = '100%';
+                        canvasElement.style.height = '100%';
+                        canvasElement.style.maxWidth = '100%';
+                        canvasElement.style.maxHeight = '100%';
+                        canvasElement.style.objectFit = 'contain';
+
+                        const dataUrl = canvasElement.toDataURL('image/png');
+                        setQrDataUrl(dataUrl);
                     }
                 }, 100);
             } catch (err) {
@@ -146,11 +178,22 @@ export default {
                 if (!scriptLoaded.value) {
                     await loadQRCodeScript();
                 }
+                
+                // Wait for DOM to be ready
+                await nextTick();
                 generateQRToCanvas();
             } catch (err) {
                 console.error('Error in QR generation process:', err);
                 error.value = 'Failed to generate QR code: ' + (err.message || 'Unknown error');
             }
+        };
+
+        const handleResize = () => {
+            // Debounce resize events
+            clearTimeout(window.qrResizeTimeout);
+            window.qrResizeTimeout = setTimeout(() => {
+                generateQR();
+            }, 250);
         };
 
         const downloadQR = () => {
@@ -192,10 +235,37 @@ export default {
 
         onMounted(() => {
             generateQR();
+            
+            // Set up ResizeObserver to handle container size changes
+            if (window.ResizeObserver && qrContainer.value) {
+                resizeObserver = new ResizeObserver(handleResize);
+                resizeObserver.observe(qrContainer.value);
+                // Also observe parent element if available
+                if (qrContainer.value.parentElement) {
+                    resizeObserver.observe(qrContainer.value.parentElement);
+                }
+            } else {
+                // Fallback to window resize
+                window.addEventListener('resize', handleResize);
+            }
         });
 
         onBeforeUnmount(() => {
             qrCode = null;
+            
+            // Clean up ResizeObserver
+            if (resizeObserver) {
+                resizeObserver.disconnect();
+                resizeObserver = null;
+            }
+            
+            // Clean up resize timeout
+            if (window.qrResizeTimeout) {
+                clearTimeout(window.qrResizeTimeout);
+            }
+            
+            // Clean up window resize listener
+            window.removeEventListener('resize', handleResize);
         });
 
         return {
@@ -214,6 +284,8 @@ export default {
 .qr-code-container {
     position: relative;
     overflow: hidden;
+    width: 100%;
+    height: 100%;
 
     .error-message {
         color: #dc3545;
@@ -223,14 +295,23 @@ export default {
     }
 
     .qr-wrapper {
+        width: 100%;
+        height: 100%;
         padding: 4px;
+        box-sizing: border-box;
+        display: flex;
+        align-items: center;
+        justify-content: center;
 
         img,
         canvas,
         svg {
             width: 100% !important;
-            height: auto !important;
-            max-width: 100%;
+            height: 100% !important;
+            max-width: 100% !important;
+            max-height: 100% !important;
+            object-fit: contain;
+            display: block;
         }
     }
 }
