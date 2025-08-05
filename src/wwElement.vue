@@ -51,15 +51,15 @@ export default {
             justifyContent: 'center'
         }));
 
-        // Map error correction levels
+        // Map error correction levels (per documentation)
         const getErrorCorrectionLevel = (level) => {
             const levels = {
-                'L': 'low',
-                'M': 'medium', 
-                'Q': 'quartile',
-                'H': 'high'
+                'L': 'L',     // Low ~7%
+                'M': 'M',     // Medium ~15% 
+                'Q': 'Q',     // Quartile ~25%
+                'H': 'H'      // High ~30%
             };
-            return levels[level] || 'medium';
+            return levels[level] || 'M';
         };
 
         const getContainerSize = () => {
@@ -90,7 +90,7 @@ export default {
                 const text = props.content?.text || 'https://www.weweb.io';
                 const size = getContainerSize();
 
-                // QR code options
+                // QR code options (following official API)
                 const options = {
                     width: size,
                     margin: 1,
@@ -98,14 +98,12 @@ export default {
                         dark: props.content?.foregroundColor || '#000000',
                         light: props.content?.backgroundColor || '#FFFFFF'
                     },
-                    errorCorrectionLevel: getErrorCorrectionLevel(props.content?.errorCorrection || 'M')
+                    errorCorrectionLevel: getErrorCorrectionLevel(props.content?.errorCorrection || 'M'),
+                    type: 'svg'
                 };
 
-                // Generate SVG string
-                const svgString = await QRCode.toString(text, {
-                    ...options,
-                    type: 'svg'
-                });
+                // Generate SVG string using official API
+                const svgString = await QRCode.toString(text, options);
 
                 // Create SVG element
                 const parser = new DOMParser();
@@ -175,10 +173,11 @@ export default {
                         dark: props.content?.foregroundColor || '#000000',
                         light: props.content?.backgroundColor || '#FFFFFF'
                     },
-                    errorCorrectionLevel: getErrorCorrectionLevel(props.content?.errorCorrection || 'M')
+                    errorCorrectionLevel: getErrorCorrectionLevel(props.content?.errorCorrection || 'M'),
+                    type: 'image/png'
                 };
 
-                // Generate high-quality PNG for download
+                // Generate high-quality PNG for download using official API
                 const pngDataUrl = await QRCode.toDataURL(text, options);
 
                 const link = document.createElement('a');
