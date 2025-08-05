@@ -6,6 +6,6 @@
         "serve": "weweb serve"
     },
     "dependencies": {
-        "qrcode": "^1.5.4"
+        "davidshimjs-qrcodejs": "^0.0.2"
     }
 }

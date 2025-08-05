@@ -9,7 +9,7 @@
 
 <script>
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
-import QRCode from 'qrcode';
+import QRCode from 'davidshimjs-qrcodejs';
 
 export default {
     props: {
@@ -23,6 +23,7 @@ export default {
     setup(props, { emit }) {
         const qrContainer = ref(null);
         const error = ref(null);
+        let qrCode = null;
         let resizeObserver = null;
 
         // Internal state for the generated QR code
@@ -50,15 +51,26 @@ export default {
             justifyContent: 'center'
         }));
 
-        // Map error correction levels to qrcode package format
-        const getErrorCorrectionLevel = (level) => {
-            const levels = {
-                'L': 'low',
-                'M': 'medium',
-                'Q': 'quartile',
-                'H': 'high'
-            };
-            return levels[level] || 'medium';
+        const postProcessSVG = (svgElement) => {
+            if (!svgElement) return;
+
+            try {
+                const whitePixels = Array.from(svgElement.querySelectorAll('use[xlink\\:href="#template"]'));
+                const overlapAmount = 0.04;
+                const expandedSize = 1 + 2 * overlapAmount;
+
+                whitePixels.forEach(pixel => {
+                    const x = parseFloat(pixel.getAttribute('x')) || 0;
+                    const y = parseFloat(pixel.getAttribute('y')) || 0;
+
+                    pixel.setAttribute('x', (x - overlapAmount).toFixed(2));
+                    pixel.setAttribute('y', (y - overlapAmount).toFixed(2));
+                    pixel.setAttribute('width', expandedSize.toFixed(2));
+                    pixel.setAttribute('height', expandedSize.toFixed(2));
+                });
+            } catch (err) {
+                console.error('Error post-processing SVG:', err);
+            }
         };
 
         const getContainerSize = () => {
@@ -88,46 +100,52 @@ export default {
                 qrContainer.value.innerHTML = '';
 
                 const size = getContainerSize();
-                const text = props.content?.text || 'https://www.weweb.io';
 
-                // Prepare options for qrcode package
-                const options = {
+                // Use the imported QRCode directly - no need for window.QRCode
+                qrCode = new QRCode(qrContainer.value, {
+                    text: props.content?.text || 'https://www.weweb.io',
                     width: size,
-                    margin: 1,
-                    color: {
-                        dark: props.content?.foregroundColor || '#000000',
-                        light: props.content?.backgroundColor || '#FFFFFF'
-                    },
-                    errorCorrectionLevel: getErrorCorrectionLevel(props.content?.errorCorrection || 'M')
-                };
-
-                // Generate SVG using qrcode package
-                const svgString = await QRCode.toString(text, {
-                    ...options,
-                    type: 'svg'
+                    height: size,
+                    colorDark: props.content?.foregroundColor || '#000000',
+                    colorLight: props.content?.backgroundColor || '#FFFFFF',
+                    correctLevel: QRCode.CorrectLevel[props.content?.errorCorrection || 'M'],
+                    useSVG: true
                 });
 
-                // Parse and configure SVG
-                const parser = new DOMParser();
-                const svgDoc = parser.parseFromString(svgString, 'image/svg+xml');
-                const svgElement = svgDoc.documentElement;
+                // Wait for rendering to complete
+                setTimeout(() => {
+                    const svgElement = qrContainer.value?.querySelector('svg');
+                    const canvasElement = qrContainer.value?.querySelector('canvas');
+                    
+                    if (svgElement) {
+                        // Make SVG responsive and fill container
+                        svgElement.setAttribute('width', '100%');
+                        svgElement.setAttribute('height', '100%');
+                        svgElement.setAttribute('viewBox', `0 0 ${size} ${size}`);
+                        svgElement.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+                        svgElement.style.width = '100%';
+                        svgElement.style.height = '100%';
+                        svgElement.style.maxWidth = '100%';
+                        svgElement.style.maxHeight = '100%';
 
-                // Make SVG responsive and fill container
-                svgElement.setAttribute('width', '100%');
-                svgElement.setAttribute('height', '100%');
-                svgElement.setAttribute('viewBox', `0 0 ${size} ${size}`);
-                svgElement.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-                svgElement.style.width = '100%';
-                svgElement.style.height = '100%';
-                svgElement.style.maxWidth = '100%';
-                svgElement.style.maxHeight = '100%';
+                        postProcessSVG(svgElement);
 
-                qrContainer.value.appendChild(svgElement);
+                        // Serialize the SVG to a data URL
+                        const svgString = new XMLSerializer().serializeToString(svgElement);
+                        const dataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgString);
+                        setQrDataUrl(dataUrl);
+                    } else if (canvasElement) {
+                        // Make canvas responsive
+                        canvasElement.style.width = '100%';
+                        canvasElement.style.height = '100%';
+                        canvasElement.style.maxWidth = '100%';
+                        canvasElement.style.maxHeight = '100%';
+                        canvasElement.style.objectFit = 'contain';
 
-                // Store data URL
-                const dataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgString);
-                setQrDataUrl(dataUrl);
-
+                        const dataUrl = canvasElement.toDataURL('image/png');
+                        setQrDataUrl(dataUrl);
+                    }
+                }, 100);
             } catch (err) {
                 console.error('Error generating QR code:', err);
                 error.value = 'Failed to generate QR code';
@@ -197,6 +215,8 @@ export default {
         });
 
         onBeforeUnmount(() => {
+            qrCode = null;
+            
             // Clean up ResizeObserver
             if (resizeObserver) {
                 resizeObserver.disconnect();
