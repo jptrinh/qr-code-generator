@@ -9,6 +9,7 @@
 
 <script>
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
+import QRCode from 'qrcode';
 
 export default {
     props: {
@@ -22,9 +23,8 @@ export default {
     setup(props, { emit }) {
         const qrContainer = ref(null);
         const error = ref(null);
-        const scriptLoaded = ref(false);
-        let qrCode = null;
         let resizeObserver = null;
+        let resizeTimeout = null;
 
         // Internal state for the generated QR code
         const { value: qrDataUrl, setValue: setQrDataUrl } = wwLib.wwVariable.useComponentVariable({
@@ -40,7 +40,7 @@ export default {
             alignItems: 'center',
             justifyContent: 'center',
             backgroundColor: props.content?.backgroundColor || '#FFFFFF',
-            minHeight: '200px' // Fallback minimum height
+            minHeight: '200px'
         }));
 
         const qrContainerStyle = computed(() => ({
@@ -51,48 +51,15 @@ export default {
             justifyContent: 'center'
         }));
 
-        // Load QR code script dynamically
-        const loadQRCodeScript = () => {
-            return new Promise((resolve, reject) => {
-                if (window.QRCode) {
-                    scriptLoaded.value = true;
-                    return resolve();
-                }
-
-                const script = document.createElement('script');
-                script.src = 'https://cdn.jsdelivr.net/npm/davidshimjs-qrcodejs@0.0.2/qrcode.min.js';
-                script.async = true;
-                script.onload = () => {
-                    scriptLoaded.value = true;
-                    resolve();
-                };
-                script.onerror = (err) => {
-                    reject(new Error('Failed to load QR code script'));
-                };
-                document.head.appendChild(script);
-            });
-        };
-
-        const postProcessSVG = (svgElement) => {
-            if (!svgElement) return;
-
-            try {
-                const whitePixels = Array.from(svgElement.querySelectorAll('use[xlink\\:href="#template"]'));
-                const overlapAmount = 0.04;
-                const expandedSize = 1 + 2 * overlapAmount;
-
-                whitePixels.forEach(pixel => {
-                    const x = parseFloat(pixel.getAttribute('x')) || 0;
-                    const y = parseFloat(pixel.getAttribute('y')) || 0;
-
-                    pixel.setAttribute('x', (x - overlapAmount).toFixed(2));
-                    pixel.setAttribute('y', (y - overlapAmount).toFixed(2));
-                    pixel.setAttribute('width', expandedSize.toFixed(2));
-                    pixel.setAttribute('height', expandedSize.toFixed(2));
-                });
-            } catch (err) {
-                console.error('Error post-processing SVG:', err);
-            }
+        // Map error correction levels
+        const getErrorCorrectionLevel = (level) => {
+            const levels = {
+                'L': 'low',
+                'M': 'medium', 
+                'Q': 'quartile',
+                'H': 'high'
+            };
+            return levels[level] || 'medium';
         };
 
         const getContainerSize = () => {
@@ -101,7 +68,6 @@ export default {
             const containerRect = qrContainer.value.getBoundingClientRect();
             const parentRect = qrContainer.value.parentElement?.getBoundingClientRect();
             
-            // Use the smaller dimension to ensure QR code fits properly
             const availableWidth = containerRect.width || parentRect?.width || 200;
             const availableHeight = containerRect.height || parentRect?.height || 200;
             
@@ -114,111 +80,148 @@ export default {
             return Math.min(availableWidth, availableHeight) || 200;
         };
 
-        const generateQRToCanvas = () => {
-            if (!qrContainer.value || !window.QRCode) return;
+        const generateQR = async () => {
+            if (!qrContainer.value) return;
 
             try {
                 error.value = null;
                 qrContainer.value.innerHTML = '';
 
+                const text = props.content?.text || 'https://www.weweb.io';
                 const size = getContainerSize();
 
-                qrCode = new window.QRCode(qrContainer.value, {
-                    text: props.content?.text || 'https://www.weweb.io',
+                // QR code options
+                const options = {
                     width: size,
-                    height: size,
-                    colorDark: props.content?.foregroundColor || '#000000',
-                    colorLight: props.content?.backgroundColor || '#FFFFFF',
-                    correctLevel: window.QRCode.CorrectLevel[props.content?.errorCorrection || 'M'],
-                    useSVG: true
+                    margin: 1,
+                    color: {
+                        dark: props.content?.foregroundColor || '#000000',
+                        light: props.content?.backgroundColor || '#FFFFFF'
+                    },
+                    errorCorrectionLevel: getErrorCorrectionLevel(props.content?.errorCorrection || 'M')
+                };
+
+                // Generate SVG string
+                const svgString = await QRCode.toString(text, {
+                    ...options,
+                    type: 'svg'
                 });
 
-                // Wait for rendering to complete
-                setTimeout(() => {
-                    const svgElement = qrContainer.value?.querySelector('svg');
-                    const canvasElement = qrContainer.value?.querySelector('canvas');
-                    
-                    if (svgElement) {
-                        // Make SVG responsive and fill container
-                        svgElement.setAttribute('width', '100%');
-                        svgElement.setAttribute('height', '100%');
-                        svgElement.setAttribute('viewBox', `0 0 ${size} ${size}`);
-                        svgElement.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-                        svgElement.style.width = '100%';
-                        svgElement.style.height = '100%';
-                        svgElement.style.maxWidth = '100%';
-                        svgElement.style.maxHeight = '100%';
+                // Create SVG element
+                const parser = new DOMParser();
+                const svgDoc = parser.parseFromString(svgString, 'image/svg+xml');
+                const svgElement = svgDoc.documentElement;
 
-                        postProcessSVG(svgElement);
+                if (!svgElement || svgElement.tagName !== 'svg') {
+                    throw new Error('Failed to generate valid SVG');
+                }
 
-                        // Serialize the SVG to a data URL
-                        const svgString = new XMLSerializer().serializeToString(svgElement);
-                        const dataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgString);
-                        setQrDataUrl(dataUrl);
-                    } else if (canvasElement) {
-                        // Make canvas responsive
-                        canvasElement.style.width = '100%';
-                        canvasElement.style.height = '100%';
-                        canvasElement.style.maxWidth = '100%';
-                        canvasElement.style.maxHeight = '100%';
-                        canvasElement.style.objectFit = 'contain';
+                // Make SVG responsive
+                svgElement.setAttribute('width', '100%');
+                svgElement.setAttribute('height', '100%');
+                svgElement.setAttribute('viewBox', `0 0 ${size} ${size}`);
+                svgElement.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+                
+                // Apply styles to prevent flickering
+                svgElement.style.cssText = `
+                    width: 100% !important;
+                    height: 100% !important;
+                    max-width: 100% !important;
+                    max-height: 100% !important;
+                    display: block !important;
+                    transition: none !important;
+                `;
 
-                        const dataUrl = canvasElement.toDataURL('image/png');
-                        setQrDataUrl(dataUrl);
-                    }
-                }, 100);
+                // Clear container and add SVG
+                qrContainer.value.innerHTML = '';
+                qrContainer.value.appendChild(svgElement);
+
+                // Store data URL for download
+                const dataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgString);
+                setQrDataUrl(dataUrl);
+
             } catch (err) {
                 console.error('Error generating QR code:', err);
-                error.value = 'Failed to generate QR code';
-            }
-        };
-
-        const generateQR = async () => {
-            try {
-                if (!scriptLoaded.value) {
-                    await loadQRCodeScript();
-                }
-                
-                // Wait for DOM to be ready
-                await nextTick();
-                generateQRToCanvas();
-            } catch (err) {
-                console.error('Error in QR generation process:', err);
-                error.value = 'Failed to generate QR code: ' + (err.message || 'Unknown error');
+                error.value = err.message.includes('too long') 
+                    ? 'Text is too long for QR code' 
+                    : 'Failed to generate QR code';
             }
         };
 
         const handleResize = () => {
-            // Debounce resize events
-            clearTimeout(window.qrResizeTimeout);
-            window.qrResizeTimeout = setTimeout(() => {
+            if (resizeTimeout) {
+                clearTimeout(resizeTimeout);
+            }
+            
+            resizeTimeout = setTimeout(() => {
                 generateQR();
             }, 250);
         };
 
-        const downloadQR = () => {
-            if (!qrDataUrl.value) {
-                console.error('No QR code data URL available for download');
+        const downloadQR = async () => {
+            if (!props.content?.text) {
+                console.error('No text content to generate QR code');
                 return;
             }
 
             try {
-                const link = document.createElement('a');
-                const isDataUrlSVG = qrDataUrl.value.startsWith('data:image/svg+xml');
+                const text = props.content.text;
+                const size = Math.max(getContainerSize(), 512); // Minimum 512px for download
 
-                link.download = isDataUrlSVG ? 'qrcode.svg' : 'qrcode.png';
-                link.href = qrDataUrl.value;
+                const options = {
+                    width: size,
+                    margin: 2,
+                    color: {
+                        dark: props.content?.foregroundColor || '#000000',
+                        light: props.content?.backgroundColor || '#FFFFFF'
+                    },
+                    errorCorrectionLevel: getErrorCorrectionLevel(props.content?.errorCorrection || 'M')
+                };
+
+                // Generate high-quality PNG for download
+                const pngDataUrl = await QRCode.toDataURL(text, options);
+
+                const link = document.createElement('a');
+                link.download = 'qrcode.png';
+                link.href = pngDataUrl;
                 link.style.display = 'none';
+                
                 document.body.appendChild(link);
                 link.click();
+                
                 setTimeout(() => {
-                    document.body.removeChild(link);
+                    if (document.body.contains(link)) {
+                        document.body.removeChild(link);
+                    }
                 }, 100);
+
             } catch (err) {
                 console.error('Error downloading QR code:', err);
+                
+                // Fallback to SVG download
+                if (qrDataUrl.value) {
+                    try {
+                        const link = document.createElement('a');
+                        link.download = 'qrcode.svg';
+                        link.href = qrDataUrl.value;
+                        link.style.display = 'none';
+                        
+                        document.body.appendChild(link);
+                        link.click();
+                        
+                        setTimeout(() => {
+                            if (document.body.contains(link)) {
+                                document.body.removeChild(link);
+                            }
+                        }, 100);
+                    } catch (fallbackErr) {
+                        console.error('Both PNG and SVG download failed:', fallbackErr);
+                    }
+                }
             }
         };
 
+        // Watch for property changes
         watch(
             () => [
                 props.content?.text,
@@ -233,38 +236,40 @@ export default {
             { deep: true }
         );
 
-        onMounted(() => {
-            generateQR();
+        onMounted(async () => {
+            // Wait for DOM to be ready
+            await nextTick();
             
-            // Set up ResizeObserver to handle container size changes
+            // Small delay to ensure container is properly sized
+            setTimeout(() => {
+                generateQR();
+            }, 10);
+            
+            // Set up ResizeObserver
             if (window.ResizeObserver && qrContainer.value) {
                 resizeObserver = new ResizeObserver(handleResize);
                 resizeObserver.observe(qrContainer.value);
-                // Also observe parent element if available
+                
                 if (qrContainer.value.parentElement) {
                     resizeObserver.observe(qrContainer.value.parentElement);
                 }
             } else {
-                // Fallback to window resize
                 window.addEventListener('resize', handleResize);
             }
         });
 
         onBeforeUnmount(() => {
-            qrCode = null;
-            
-            // Clean up ResizeObserver
+            // Cleanup
             if (resizeObserver) {
                 resizeObserver.disconnect();
                 resizeObserver = null;
             }
             
-            // Clean up resize timeout
-            if (window.qrResizeTimeout) {
-                clearTimeout(window.qrResizeTimeout);
+            if (resizeTimeout) {
+                clearTimeout(resizeTimeout);
+                resizeTimeout = null;
             }
             
-            // Clean up window resize listener
             window.removeEventListener('resize', handleResize);
         });
 
@@ -292,6 +297,10 @@ export default {
         text-align: center;
         padding: 1rem;
         font-size: 14px;
+        background-color: rgba(220, 53, 69, 0.1);
+        border-radius: 4px;
+        border: 1px solid rgba(220, 53, 69, 0.2);
+        max-width: 300px;
     }
 
     .qr-wrapper {
@@ -302,16 +311,35 @@ export default {
         display: flex;
         align-items: center;
         justify-content: center;
+        min-height: 100px;
 
-        img,
-        canvas,
         svg {
             width: 100% !important;
             height: 100% !important;
             max-width: 100% !important;
             max-height: 100% !important;
-            object-fit: contain;
-            display: block;
+            display: block !important;
+            transition: none !important;
+            transform: none !important;
+            
+            // Crisp rendering
+            shape-rendering: crispEdges;
+            image-rendering: pixelated;
+        }
+    }
+}
+
+// Responsive improvements
+@media (max-width: 768px) {
+    .qr-code-container {
+        .error-message {
+            font-size: 12px;
+            padding: 0.75rem;
+            max-width: 250px;
+        }
+        
+        .qr-wrapper {
+            padding: 2px;
         }
     }
 }

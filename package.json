@@ -5,5 +5,7 @@
         "build": "weweb build",
         "serve": "weweb serve"
     },
-    "devDependencies": {}
+    "dependencies": {
+        "qrcode": "^1.5.4"
+    }
 }
