@@ -113,22 +113,32 @@ export default {
                 });
 
                 // Wait for rendering to complete
+                await nextTick();
                 setTimeout(() => {
                     const svgElement = qrContainer.value?.querySelector('svg');
                     const canvasElement = qrContainer.value?.querySelector('canvas');
                     
                     if (svgElement) {
-                        // Make SVG responsive and fill container
+                        // Store original viewBox before modifications
+                        const originalViewBox = svgElement.getAttribute('viewBox') || `0 0 ${size} ${size}`;
+                        
+                        // Apply post-processing BEFORE making responsive
+                        postProcessSVG(svgElement);
+
+                        // Now make SVG responsive and fill container
                         svgElement.setAttribute('width', '100%');
                         svgElement.setAttribute('height', '100%');
-                        svgElement.setAttribute('viewBox', `0 0 ${size} ${size}`);
+                        svgElement.setAttribute('viewBox', originalViewBox);
                         svgElement.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-                        svgElement.style.width = '100%';
-                        svgElement.style.height = '100%';
-                        svgElement.style.maxWidth = '100%';
-                        svgElement.style.maxHeight = '100%';
-
-                        postProcessSVG(svgElement);
+                        
+                        // Use CSS for sizing to prevent conflicts
+                        svgElement.style.cssText = `
+                            width: 100% !important;
+                            height: 100% !important;
+                            max-width: 100% !important;
+                            max-height: 100% !important;
+                            display: block !important;
+                        `;
 
                         // Serialize the SVG to a data URL
                         const svgString = new XMLSerializer().serializeToString(svgElement);
@@ -136,16 +146,19 @@ export default {
                         setQrDataUrl(dataUrl);
                     } else if (canvasElement) {
                         // Make canvas responsive
-                        canvasElement.style.width = '100%';
-                        canvasElement.style.height = '100%';
-                        canvasElement.style.maxWidth = '100%';
-                        canvasElement.style.maxHeight = '100%';
-                        canvasElement.style.objectFit = 'contain';
+                        canvasElement.style.cssText = `
+                            width: 100% !important;
+                            height: 100% !important;
+                            max-width: 100% !important;
+                            max-height: 100% !important;
+                            object-fit: contain !important;
+                            display: block !important;
+                        `;
 
                         const dataUrl = canvasElement.toDataURL('image/png');
                         setQrDataUrl(dataUrl);
                     }
-                }, 100);
+                }, 50); // Reduced timeout for faster rendering
             } catch (err) {
                 console.error('Error generating QR code:', err);
                 error.value = 'Failed to generate QR code';
@@ -197,8 +210,14 @@ export default {
             { deep: true }
         );
 
-        onMounted(() => {
-            generateQR();
+        onMounted(async () => {
+            // Wait for DOM to be fully ready
+            await nextTick();
+            
+            // Small delay to ensure container is properly sized
+            setTimeout(() => {
+                generateQR();
+            }, 10);
             
             // Set up ResizeObserver to handle container size changes
             if (window.ResizeObserver && qrContainer.value) {
@@ -266,6 +285,9 @@ export default {
         display: flex;
         align-items: center;
         justify-content: center;
+        
+        // Prevent layout shifts
+        min-height: 100px;
 
         img,
         canvas,
@@ -274,8 +296,12 @@ export default {
             height: 100% !important;
             max-width: 100% !important;
             max-height: 100% !important;
-            object-fit: contain;
-            display: block;
+            object-fit: contain !important;
+            display: block !important;
+            
+            // Prevent flickering and ensure smooth rendering
+            transition: none !important;
+            transform: none !important;
         }
     }
 }
